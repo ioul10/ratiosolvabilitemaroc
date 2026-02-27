@@ -106,7 +106,7 @@ st.write('Review date from:', d)
 
 ###################################### Table in the form of dataframe ##################################
 st.write("Whale_navs top 100")
-whale_navs = Path('../Streamlit/whale_navs.csv')
+whale_navs = Path('whale_navs.csv')
 whale_navs = pd.read_csv(whale_navs, index_col='date')
 st.dataframe(whale_navs.head(100))
 
@@ -355,3 +355,4 @@ except URLError as e:
     """
         % e.reason
     )
+
