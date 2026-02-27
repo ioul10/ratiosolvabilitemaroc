@@ -1,213 +1,357 @@
-import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import streamlit as st
+from pathlib import Path
+import pydeck as pdk
+import numpy as np
+import datetime
+import time
 
-st.set_page_config(page_title="Ratio de Solvabilité - BAM", layout="wide", page_icon="🏦")
-st.title("🛡️ Calculateur Ratio de Solvabilité Bâle III - Maroc")
-st.markdown("**Application interactive basée sur les circulaires n°14/G/13 et 26/G/2006** (document fourni)")
-
-# Session state pour valeurs dynamiques
-defaults = {'cet1': 9.5, 'at1': 1.5, 't2': 3.0}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-tabs = st.tabs(["🏠 Accueil", "🏗️ Fonds Propres", "📊 Calculateur RWA Crédit", 
-                "🛡️ Simulateur ARC", "📈 Dashboard", "📚 Références"])
-
-# TAB ACCUEIL (slide 1)
-with tabs[0]:
-    st.header("Ratio de Solvabilité - Contexte Général")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Objectifs")
-        st.markdown("""
-        - Renforcer l'assise financière des établissements de crédit  
-        - Améliorer les conditions de concurrence en les soumettant tous au même régime
-        """)
-    with col2:
-        st.subheader("Architecture des 3 Piliers")
-        st.markdown("""
-        **Pilier 1** : Renouvellement des exigences minimales de fonds propres (Risque de marché / crédit / opérationnel)  
-        **Pilier 2** : Renforcement de la Surveillance prudentielle (Analyse profil risque, contrôle procédures, exigences individuelles supérieures)  
-        **Pilier 3** : Utilisation de la communication d'informations pour améliorer la discipline de marché (Renforcement sur risques crédit, info sur autres risques et structure capital)
-        """)
-    
-    st.success("**Ratio de Solvabilité minimum** : Fonds Propres Prudentiels / (RWA Crédit + RWA Marché + RWA Opérationnel) ≥ 12 %")
-    
-    with st.expander("Définition détaillée du RWA Crédit (slide 1)"):
-        st.markdown("""
-        RWA crédit : Risque Pondéré calculé en multipliant l'exposition  
-        - Actif pour bilan / (Exposition × CCF) pour hors-bilan  
-        par la pondération de la contrepartie et après application des ARC
-        """)
-
-# TAB FONDS PROPRES (slides 2 + 3)
-with tabs[1]:
-    st.header("Fonds Propres Prudentiels (Circulaire 14/G/13)")
-    
-    with st.expander("Composition des éléments (slide 2)"):
-        st.markdown("""
-        **Tier 1** = CET1 + AT1  
-        - **CET1** : Capital (mutualistes inclus), Primes d'émission, Réserves, Bénéfices non distribués, OCI, Intérêts minoritaires (conditions), Déductions (immobilisations incorporelles, détentions croisées, etc.)  
-        - **AT1** : Instruments perpétuels subordonnés, Capacité absorption pertes, Primes, Déductions  
-        **Tier 2** : Instruments subordonnés ≥5 ans, Pas d'arrangement rehaussant rang, Primes, Déductions
-        """)
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.subheader("CET1")
-        st.markdown("Minimum 5,5 % + Coussin conservation 2,5 % → **≥ 8 %**")
-        st.session_state.cet1 = st.slider("CET1 saisi (%)", 0.0, 20.0, st.session_state.cet1, 0.1)
-    
-    with col2:
-        st.subheader("AT1 (additionnel Tier 1)")
-        st.markdown("Part de Tier 1 au-delà de CET1")
-        st.session_state.at1 = st.slider("AT1 saisi (%)", 0.0, 10.0, st.session_state.at1, 0.1)
-    
-    with col3:
-        st.subheader("Tier 2 (complémentaire)")
-        st.markdown("Instruments ≥5 ans, subordonnés")
-        st.session_state.t2 = st.slider("Tier 2 saisi (%)", 0.0, 10.0, st.session_state.t2, 0.1)
-    
-    t1 = st.session_state.cet1 + st.session_state.at1
-    total = t1 + st.session_state.t2
-    
-    st.metric("Tier 1 calculé (CET1 + AT1)", f"{t1:.2f} %")
-    st.metric("Total Capital (T1 + T2)", f"{total:.2f} %", help="≥ 12 %")
-    
-    # Checks minima (slide 3)
-    ok_cet1 = st.session_state.cet1 >= 8
-    ok_t1 = t1 >= 9
-    ok_total = total >= 12
-    
-    cols = st.columns(3)
-    cols[0].metric("CET1", f"{st.session_state.cet1:.1f}%", "OK" if ok_cet1 else "KO <8%", delta_color="normal" if ok_cet1 else "inverse")
-    cols[1].metric("Tier 1", f"{t1:.1f}%", "OK" if ok_t1 else "KO <9%", delta_color="normal" if ok_t1 else "inverse")
-    cols[2].metric("Total", f"{total:.1f}%", "OK" if ok_total else "KO <12%", delta_color="normal" if ok_total else "inverse")
-    
-    if ok_cet1 and ok_t1 and ok_total:
-        st.success("✅ Conforme sur tous les niveaux")
-    else:
-        st.error("❌ Non conforme – Au moins un minimum non respecté")
-    
-    with st.expander("Exigences détaillées (slide 3)"):
-        st.markdown("""
-        - CET1 ≥ 8 % (5,5 % base + 2,5 % coussin conservation)  
-        - Tier 1 ≥ 9 %  
-        - Total (T1 + T2) ≥ 12 %  
-        Coussin de conservation : éléments CET1, destiné à absorber pertes en crise
-        """)
-
-# TAB CALCULATEUR RWA (slide 4)
-with tabs[2]:
-    st.header("Calculateur RWA Crédit (Circulaire 26/G/2006)")
-    st.markdown("**Formule** : RWA = EAD nette × CCF × Pondération (avant ARC)")
-    
-    ead = st.number_input("EAD nette de provisions (MDH)", value=15.0, min_value=0.0, step=0.1)
-    
-    type_expo = st.radio("Type d'exposition", ["Bilan (actif)", "Hors-bilan (engagements)"])
-    if type_expo == "Bilan (actif)":
-        ccf_value = 100
-        st.info("CCF = 100 % pour bilan")
-    else:
-        ccf_label = st.select_slider("CCF", options=["0% Risque faible", "20% Risque modéré", "50% Risque moyen", "100% Risque élevé"])
-        ccf_value = int(ccf_label.split("%")[0])
-    
-    type_client = st.selectbox("Type de contrepartie", 
-                               ["Souverain", "Institution", "Établissement de crédit", "GE", "PME", "TPE", "Particulier", "Prêt immobilier"])
-    
-    pond_dict = {
-        "Souverain": 0, "Institution": 0, "Établissement de crédit": 20,  # simplifié, note <3 mois
-        "GE": 100, "PME": 85, "TPE": 75, "Particulier": 100, "Prêt immobilier": 35
+st.markdown(
+    """
+    <style>
+     /* Define font size and color for st.write text */
+    body {
+        color: grey;
+        text-shadow: 2px 2px white;
+        font-size: 24 px;
     }
-    pond = pond_dict.get(type_client, 100)
-    
-    if type_client == "Particulier":
-        if st.checkbox("Montant > 1 MDH (hors immo) ?"):
-            pond = 100
-        else:
-            pond = 75
-    
-    if st.checkbox("Créance en souffrance ?"):
-        prov = st.slider("Taux de provisionnement (%)", 0, 100, 50)
-        pond = max(50, min(150, 100 - prov + 50))  # approx slide 4
-        st.info(f"Pondération ajustée souffrance : {pond}%")
-    
-    with st.expander("Pondérations réglementaires (slide 4)"):
-        df = pd.DataFrame({
-            "Contrepartie": list(pond_dict.keys()),
-            "Pondération (%)": list(pond_dict.values())
-        })
-        df.loc[len(df)] = ["Particulier >1 MDH hors immo", 100]
-        st.dataframe(df)
-    
-    rwa = ead * (ccf_value / 100) * (pond / 100)
-    st.metric("RWA calculé (avant ARC)", f"{rwa:.2f} MDH")
-    st.info(f"Calcul : {ead:.1f} × {ccf_value}% × {pond}%")
+    </style>
+    """,
+    unsafe_allow_html=True)
 
-# TAB ARC (slide 5)
-with tabs[3]:
-    st.header("Simulateur ARC (Circulaire 26/G/2006)")
-    st.subheader("Exemple crédit investissement 15 MDH")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Avant ARC**")
-        type_contre = st.selectbox("Type contrepartie exemple", ["GE", "PME", "TPE"], key="ex_type")
-        pond_ex = {"GE":100, "PME":85, "TPE":75}[type_contre]
-        rwa_avant = 15 * (pond_ex / 100)
-        st.metric("RWA avant", f"{rwa_avant:.2f} MDH")
-    
-    with col2:
-        st.write("**Après ARC** (exemples slide 5)")
-        garantie = st.slider("Montant garanti (MDH)", 0.0, 15.0, 4.0)
-        type_garant = st.radio("Type garantie", ["Caution bancaire (20%)", "Garantie étatique (0%)", "DAT (0%)"])
-        pond_g = 20 if type_garant == "Caution bancaire (20%)" else 0
-        
-        restant = 15 - garantie
-        rwa_apres = (restant * (pond_ex / 100)) + (garantie * (pond_g / 100))
-        gain = rwa_avant - rwa_apres
-        st.metric("RWA après", f"{rwa_apres:.2f} MDH", f"Gain {gain:.2f} MDH" if gain > 0 else "0")
-    
-    with st.expander("Détails exemples slide 5"):
-        st.markdown("""
-        1. GE 10 MDH + caution EC 4 MDH : RWA = 5.5×100% + 4×20% + 0.5×100% = 6.8  
-        2. PME + garantie étatique 4 MDH : RWA = 5.5×85% + 4×0% + 0.5×85% = 5.1  
-        3. TPE + DAT 4 MDH : RWA = 5.5×75% + 4×0% + 0.5×75% = 5.1
-        """)
+page_bg_img = """
+<style>
+[data-testid="stAppViewContainer"] {
+background-image: url(https://c0.wallpaperflare.com/preview/968/798/549/5be98a7d18e35.jpg);
+background-position: bottom;
+background-size: cover;
+}
 
-# TAB DASHBOARD
-with tabs[4]:
-    st.header("Dashboard Solvabilité")
-    fig = make_subplots(rows=1, cols=2, specs=[[{"type": "indicator"}, {"type": "pie"}]])
-    
-    fig.add_trace(go.Indicator(
-        mode="gauge+number",
-        value=st.session_state.cet1,
-        title="CET1 (%)",
-        gauge={"axis": {"range": [0, 20]}, "steps": [{"range": [0,8],"color":"red"}, {"range":[8,20],"color":"green"}]}
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Pie(labels=["CET1", "AT1", "T2"], values=[st.session_state.cet1, st.session_state.at1, st.session_state.t2], hole=0.4), row=1, col=2)
-    
-    fig.update_layout(height=400, title="Répartition Fonds Propres")
-    st.plotly_chart(fig, use_container_width=True)
+[data-testid="stSidebar"] {
+background-image: url(https://coolbackgrounds.io/images/backgrounds/white/white-unsplash-9d0375d2.jpg);
+background-size: cover;
+background-position: right;
+}
 
-# TAB REFERENCES
-with tabs[5]:
-    st.header("Références")
-    st.markdown("""
-    - Circulaire n°14/G/13 : Fonds propres prudentiels  
-    - Circulaire n°26/G/2006 : Exigences en fonds propres (RWA crédit/marché/op)  
-    """)
-    st.subheader("Segmentation (circulaire 8/G/2010)")
-    st.markdown("""
-    - CA HT ≤10 MDH + engagement ≤2 MDH → TPE  
-    - CA HT ≤10 MDH + engagement >2 MDH → PME  
-    - 10 < CA HT ≤175 MDH → PME  
-    - CA HT >175 MDH → GE
-    """)
+[data-testid="stHeader"] {
+background-color: rgba(0, 0, 0, 0);
+}
+</style>
+"""
 
-st.sidebar.success("App prête – Fidèle au document fourni")
+st.markdown(page_bg_img, unsafe_allow_html=True)
+st.sidebar.header("Banks")
+
+#Header
+def main():
+    st.title("Banking Stress Testing and Capital Reserve Requirements Comparisons")
+    st.write("*Mark Beers, Gregory Kulin, Samuel Jew, Eyasu Alemu, John Garcia, and Chris Cummock*", unsafe_allow_html=True)
+    st.write('---', unsafe_allow_html=True)
+   
+if __name__ == '__main__':
+    main()
+    
+#Outline
+st.write("In this research project, we will analyze how each banks' capital reserve and loan loss limits would be affected in various economic scenarios and each banks ability to weather the storm, or need to recapitalize.", unsafe_allow_html=True)
+st.write("Running **Monte Carlo Simulations** and **Macro economic scenarios** of: interest rate rise, treasury rates rise/fall, large loan losses increase, capital run scenarios and the subsequent capital and reserve capital ratio difficulties of their liquidity vs basel or fed requirements.", unsafe_allow_html=True)
+
+#columns
+Banks = ["- First Republic Bank", "- JP Morgan", "- Bank of America", "- Silicon Valley Bank", "- Big Banking Sector ETF"]
+stress_tests = ["- Inflation", "- Reserve Capital and Ratios Changes", "- GDP Changes", "- Interest Rates and Mortgage Rates Change", "- Treasury Yields", "- Loan Loss Scenarios"]
+
+col1, col2 = st.columns(2)
+with col1:
+    st.write("**Comparing capital level & testing different macro economic scenarios of:**", unsafe_allow_html=True)
+    for item in Banks:
+        st.write(item)
+
+with col2:
+    st.write("**Stress Tests on:**", unsafe_allow_html=True)
+    for item in stress_tests:
+        st.write(item)
+
+st.write('---', unsafe_allow_html=True)
+
+#Data
+
+####### graph##############
+import altair as alt
+
+
+
+
+
+#page_bg_img = """
+#<style>
+#[data-testid="stAppViewContainer"]
+#background-color: #000000;
+#secondaryBackgroundColor="#F0F2F6"
+#textColor="#262730"
+#font="sans serif"
+#</style>
+#"""
+# primaryColor="#F63366"
+# backgroundColor="#FFFFFF"
+# secondaryBackgroundColor="#F0F2F6"
+# textColor="#262730"
+# font="sans serif"
+
+################################################# Date field with Calander selection ###########################
+
+
+d = st.date_input(
+    "Review Date Start From",
+    datetime.date(2019,1, 2, ))
+st.write('Review date from:', d)
+
+###################################### Table in the form of dataframe ##################################
+st.write("Whale_navs top 100")
+whale_navs = Path('../Streamlit/whale_navs.csv')
+whale_navs = pd.read_csv(whale_navs, index_col='date')
+st.dataframe(whale_navs.head(100))
+
+######################################### Download file as a csv file###############################
+def convert_df(df):
+    # IMPORTANT: Cache the conversion to prevent computation on every rerun
+    return df.to_csv().encode('utf-8')
+
+csv = convert_df(whale_navs.head(100))
+
+st.download_button(
+    label="Download data as CSV",
+    data=csv,
+    file_name='large_df.csv',
+    mime='text/csv',
+)
+
+###################################### Plot ############################################################
+st.write("Daily Return")
+daily_return = whale_navs.pct_change().dropna()
+daily_return.head(5)
+
+# myplot=daily_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure
+
+df_myplot = st.pyplot(daily_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure)
+
+
+################################## Data with tabs ##########################################################
+st.write("Cumulative Return")
+cumulative_return = (1 + daily_return).cumprod() - 1
+# st.pyplot(cumulative_return.plot(figsize=(15,7), title="Cumulative Return", rot=90).figure)
+
+tab1, tab2 = st.tabs(["📈 Chart", "🗃 Data"])
+tab1_data = st.pyplot(cumulative_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure)
+tab2_data = cumulative_return
+
+tab1.subheader("A tab with a chart")
+tab1.tab1_data
+
+tab2.subheader("A tab with the data")
+tab2.write(tab2_data)
+
+
+######################################## Slied bar###################################################################
+low_volatility, high_volatility = st.select_slider(
+    'Select a range of volatility wavelength',
+    options=['low', 'medium', 'high' ],
+    value=('low', 'high'))
+st.write('You selected wavelengths between', low_volatility, 'and', high_volatility)
+
+################################ sidebar load graph  ######################################################################
+
+# st.set_page_config(page_title="Plotting Demo", page_icon="📈")
+
+st.markdown("# Plotting Demo")
+st.sidebar.header("Plotting Demo")
+st.write(
+    """This demo illustrates a combination of plotting and animation with
+Streamlit. We're generating a bunch of random numbers in a loop for around
+5 seconds. Enjoy!"""
+)
+
+progress_bar = st.sidebar.progress(0)
+status_text = st.sidebar.empty()
+last_rows = np.random.randn(1, 1)
+chart = st.line_chart(last_rows)
+
+for i in range(1, 101):
+    new_rows = last_rows[-1, :] + np.random.randn(5, 1).cumsum(axis=0)
+    status_text.text("%i%% Complete" % i)
+    chart.add_rows(new_rows)
+    progress_bar.progress(i)
+    last_rows = new_rows
+    time.sleep(0.05)
+
+progress_bar.empty()
+
+# Streamlit widgets automatically run the script from top to bottom. Since
+# this button is not connected to any other logic, it just causes a plain
+# rerun.
+st.button("Re-run")
+
+
+############################################## Sidebar Map ##################################################
+
+
+
+# st.set_page_config(page_title="Mapping Demo", page_icon="🌍")
+
+# st.markdown("# Mapping Demo")
+# st.sidebar.header("Mapping Demo")
+# st.write(
+#     """This demo shows how to use
+# [`st.pydeck_chart`](https://docs.streamlit.io/library/api-reference/charts/st.pydeck_chart)
+# to display geospatial data."""
+# )
+
+
+@st.cache_data
+def from_data_file(filename):
+    url = (
+        "http://raw.githubusercontent.com/streamlit/"
+        "example-data/master/hello/v1/%s" % filename
+    )
+    return pd.read_json(url)
+
+
+try:
+    ALL_LAYERS = {
+        "Wells Fargo": pdk.Layer(
+            "HexagonLayer",
+            data=from_data_file("bike_rental_stats.json"),
+            get_position=["lon", "lat"],
+            radius=200,
+            elevation_scale=4,
+            elevation_range=[0, 1000],
+            extruded=True,
+        ),
+        "JP Morgan": pdk.Layer(
+            "ScatterplotLayer",
+            data=from_data_file("bart_stop_stats.json"),
+            get_position=["lon", "lat"],
+            get_color=[200, 30, 0, 160],
+            get_radius="[exits]",
+            radius_scale=0.05,
+        ),
+        "Bank of America": pdk.Layer(
+            "TextLayer",
+            data=from_data_file("bart_stop_stats.json"),
+            get_position=["lon", "lat"],
+            get_text="name",
+            get_color=[0, 0, 0, 200],
+            get_size=15,
+            get_alignment_baseline="'bottom'",
+        ),
+        "Silcon Vally Bank": pdk.Layer(
+            "ArcLayer",
+            data=from_data_file("bart_path_stats.json"),
+            get_source_position=["lon", "lat"],
+            get_target_position=["lon2", "lat2"],
+            get_source_color=[200, 30, 0, 160],
+            get_target_color=[200, 30, 0, 160],
+            auto_highlight=True,
+            width_scale=0.0001,
+            get_width="outbound",
+            width_min_pixels=3,
+            width_max_pixels=30,
+        ),
+           "Silcon Vally Bank": pdk.Layer(
+            "ArcLayer",
+            data=from_data_file("bart_path_stats.json"),
+            get_source_position=["lon", "lat"],
+            get_target_position=["lon2", "lat2"],
+            get_source_color=[200, 30, 0, 160],
+            get_target_color=[200, 30, 0, 160],
+            auto_highlight=True,
+            width_scale=0.0001,
+            get_width="outbound",
+            width_min_pixels=3,
+            width_max_pixels=30,
+        ),
+    }
+    st.sidebar.markdown("### Bank List")
+    selected_layers = [
+        layer
+        for layer_name, layer in ALL_LAYERS.items()
+        if st.sidebar.checkbox(layer_name, True)
+    ]
+    if selected_layers:
+        st.pydeck_chart(
+            pdk.Deck(
+                map_style="mapbox://styles/mapbox/light-v9",
+                initial_view_state={
+                    "latitude": 37.76,
+                    "longitude": -122.4,
+                    "zoom": 11,
+                    "pitch": 50,
+                },
+                layers=selected_layers,
+            )
+        )
+    else:
+        st.error("Please choose at least one layer above.")
+except URLError as e:
+    st.error(
+        """
+        **This demo requires internet access.**
+        Connection error: %s
+    """
+        % e.reason
+    )
+
+
+    ################################## graph ###################################
+
+
+
+# st.set_page_config(page_title="DataFrame Demo", page_icon="📊")
+
+st.markdown("# DataFrame Demo")
+st.sidebar.header("DataFrame Demo")
+st.write(
+    """This demo shows how to use `st.write` to visualize Pandas DataFrames.
+(Data courtesy of the [UN Data Explorer](http://data.un.org/Explorer.aspx).)"""
+)
+
+
+@st.cache_data
+def get_UN_data():
+    AWS_BUCKET_URL = "http://streamlit-demo-data.s3-us-west-2.amazonaws.com"
+    df = pd.read_csv(AWS_BUCKET_URL + "/agri.csv.gz")
+    return df.set_index("Region")
+
+
+try:
+    df = get_UN_data()
+    countries = st.multiselect(
+        "Choose countries", list(df.index), ["China", "United States of America"]
+    )
+    if not countries:
+        st.error("Please select at least one country.")
+    else:
+        data = df.loc[countries]
+        data /= 1000000.0
+        st.write("### Gross Agricultural Production ($B)", data.sort_index())
+
+        data = data.T.reset_index()
+        data = pd.melt(data, id_vars=["index"]).rename(
+            columns={"index": "year", "value": "Gross Agricultural Product ($B)"}
+        )
+        chart = (
+            alt.Chart(data)
+            .mark_area(opacity=0.3)
+            .encode(
+                x="year:T",
+                y=alt.Y("Gross Agricultural Product ($B):Q", stack=None),
+                color="Region:N",
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
+except URLError as e:
+    st.error(
+        """
+        **This demo requires internet access.**
+        Connection error: %s
+    """
+        % e.reason
+    )
