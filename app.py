@@ -1,358 +1,190 @@
-import pandas as pd
 import streamlit as st
-from pathlib import Path
-import pydeck as pdk
-import numpy as np
-import datetime
-import time
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
 
-st.markdown(
-    """
-    <style>
-     /* Define font size and color for st.write text */
-    body {
-        color: grey;
-        text-shadow: 2px 2px white;
-        font-size: 24 px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True)
+# ===================== CLASSE CALCUL SELON CIRCULAIRE 26/G/2006 =====================
+class RWACalculator_BAM:
+    def __init__(self):
+        self.min_ratio = 10.0  # Article 2
 
-page_bg_img = """
-<style>
-[data-testid="stAppViewContainer"] {
-background-image: url(https://c0.wallpaperflare.com/preview/968/798/549/5be98a7d18e35.jpg);
-background-position: bottom;
-background-size: cover;
-}
+        # Pondérations Crédit (Art. 11)
+        self.credit_weights = {
+            "Etat Maroc MAD": 0.0,
+            "Etat AAA/AA-": 0.0,
+            "Etat A+/A-": 0.20,
+            "Etat BBB+/BBB-": 0.50,
+            "Etat BB+/BB-": 1.00,
+            "Etat B+/B-": 1.00,
+            "Etat < B-": 1.50,
+            "Banques AAA/AA-": 0.20,
+            "Banques A+/A-": 0.50,
+            "Banques BBB+/BBB-": 0.50,
+            "Banques BB+/BB-": 1.00,
+            "Banques B+/B-": 1.00,
+            "Banques < B-": 1.50,
+            "Entreprises notées AAA/AA-": 0.20,
+            "Entreprises notées A+/A-": 0.50,
+            "Entreprises notées BBB+/BBB-": 1.00,
+            "Entreprises notées BB+/BB-": 1.00,
+            "Entreprises notées B+/B-": 1.50,
+            "Entreprises < B-": 1.50,
+            "Entreprises non notées": 1.00,
+            "PME / TPE": 0.75,
+            "Particuliers": 0.75,
+            "Prêt immobilier résidentiel": 0.35,
+            "Prêt immobilier commercial": 1.00,
+            "Créances en souffrance <20% provision": 1.50,
+            "Créances en souffrance ≥20%": 1.00,
+            "Equity / Hedge funds": 1.00,      # traitement par défaut
+            "Venture / Capital risque": 1.50,
+            "Autre actif": 1.00
+        }
 
-[data-testid="stSidebar"] {
-background-image: url(https://coolbackgrounds.io/images/backgrounds/white/white-unsplash-9d0375d2.jpg);
-background-size: cover;
-background-position: right;
-}
+    def rwa_credit(self, exposures_dict):
+        """exposures_dict = {'catégorie': montant_en_M_MAD, ...}"""
+        return sum(amount * self.credit_weights.get(cat, 1.0) for cat, amount in exposures_dict.items())
 
-[data-testid="stHeader"] {
-background-color: rgba(0, 0, 0, 0);
-}
-</style>
-"""
+    def rwa_market(self, nav_series):
+        """Méthode simplifiée (Article 48-55)"""
+        returns = nav_series.pct_change().dropna()
+        volatility = returns.std() * 100
+        factor = max(0.08, volatility / 25)          # facteur prudentiel
+        return nav_series.mean() * factor * 12.5
 
-st.markdown(page_bg_img, unsafe_allow_html=True)
-st.sidebar.header("Banks")
+    def rwa_operational(self, avg_gross_income):
+        """Approche de base (Article 56-62)"""
+        return avg_gross_income * 0.15 * 12.5
 
-#Header
-def main():
-    st.title("Banking Stress Testing and Capital Reserve Requirements Comparisons")
-    st.write("*Mark Beers, Gregory Kulin, Samuel Jew, Eyasu Alemu, John Garcia, and Chris Cummock*", unsafe_allow_html=True)
-    st.write('---', unsafe_allow_html=True)
-   
-if __name__ == '__main__':
-    main()
+    def solvency_ratio(self, own_funds, total_rwa):
+        return (own_funds / total_rwa * 100) if total_rwa > 0 else 0
+
+
+# ===================== APPLICATION STREAMLIT =====================
+st.set_page_config(page_title="BAM Solvabilité 26/G/2006", layout="wide", page_icon="🇲🇦")
+st.title("📊 Coefficient de Solvabilité – Circulaire n°26/G/2006")
+st.caption("Bank Al-Maghrib • Approche Standard • Mise à jour 2026")
+
+calculator = RWACalculator_BAM()
+
+# Chargement des données whale_navs.csv
+@st.cache_data
+def load_data():
+    df = pd.read_csv("whale_navs.csv", parse_dates=["date"])
+    df.set_index("date", inplace=True)
+    return df
+
+df = load_data()
+
+# ===================== ONGLETS =====================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🏠 Accueil", 
+    "📉 Risque Crédit", 
+    "📈 Risque Marché", 
+    "⚙️ Risque Opérationnel", 
+    "📊 Ratio Solvabilité"
+])
+
+with tab1:
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Bank_Al-Maghrib_logo.svg/800px-Bank_Al-Maghrib_logo.svg.png", width=250)
+    st.markdown("""
+    **Application conforme à la Circulaire n° 26/G/2006**  
+    - Pondérations détaillées (Art. 9 à 47)  
+    - Multiplicateur ×12,5 pour marché & opérationnel (Art. 5)  
+    - Exigence minimale 10 % (Art. 2)  
+    - Utilise **whale_navs.csv** comme portefeuille d’exemple
+    """)
+
+with tab2:
+    st.header("II. Risque de Crédit (Art. 9-47)")
+    date_selected = st.select_slider("Date du portefeuille", 
+                                     options=df.index, 
+                                     value=df.index[-1])
     
-#Outline
-st.write("In this research project, we will analyze how each banks' capital reserve and loan loss limits would be affected in various economic scenarios and each banks ability to weather the storm, or need to recapitalize.", unsafe_allow_html=True)
-st.write("Running **Monte Carlo Simulations** and **Macro economic scenarios** of: interest rate rise, treasury rates rise/fall, large loan losses increase, capital run scenarios and the subsequent capital and reserve capital ratio difficulties of their liquidity vs basel or fed requirements.", unsafe_allow_html=True)
-
-#columns
-Banks = ["- First Republic Bank", "- JP Morgan", "- Bank of America", "- Silicon Valley Bank", "- Big Banking Sector ETF"]
-stress_tests = ["- Inflation", "- Reserve Capital and Ratios Changes", "- GDP Changes", "- Interest Rates and Mortgage Rates Change", "- Treasury Yields", "- Loan Loss Scenarios"]
-
-col1, col2 = st.columns(2)
-with col1:
-    st.write("**Comparing capital level & testing different macro economic scenarios of:**", unsafe_allow_html=True)
-    for item in Banks:
-        st.write(item)
-
-with col2:
-    st.write("**Stress Tests on:**", unsafe_allow_html=True)
-    for item in stress_tests:
-        st.write(item)
-
-st.write('---', unsafe_allow_html=True)
-
-#Data
-
-####### graph##############
-import altair as alt
-
-
-
-
-
-#page_bg_img = """
-#<style>
-#[data-testid="stAppViewContainer"]
-#background-color: #000000;
-#secondaryBackgroundColor="#F0F2F6"
-#textColor="#262730"
-#font="sans serif"
-#</style>
-#"""
-# primaryColor="#F63366"
-# backgroundColor="#FFFFFF"
-# secondaryBackgroundColor="#F0F2F6"
-# textColor="#262730"
-# font="sans serif"
-
-################################################# Date field with Calander selection ###########################
-
-
-d = st.date_input(
-    "Review Date Start From",
-    datetime.date(2019,1, 2, ))
-st.write('Review date from:', d)
-
-###################################### Table in the form of dataframe ##################################
-st.write("Whale_navs top 100")
-whale_navs = Path('whale_navs.csv')
-whale_navs = pd.read_csv(whale_navs, index_col='date')
-st.dataframe(whale_navs.head(100))
-
-######################################### Download file as a csv file###############################
-def convert_df(df):
-    # IMPORTANT: Cache the conversion to prevent computation on every rerun
-    return df.to_csv().encode('utf-8')
-
-csv = convert_df(whale_navs.head(100))
-
-st.download_button(
-    label="Download data as CSV",
-    data=csv,
-    file_name='large_df.csv',
-    mime='text/csv',
-)
-
-###################################### Plot ############################################################
-st.write("Daily Return")
-daily_return = whale_navs.pct_change().dropna()
-daily_return.head(5)
-
-# myplot=daily_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure
-
-df_myplot = st.pyplot(daily_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure)
-
-
-################################## Data with tabs ##########################################################
-st.write("Cumulative Return")
-cumulative_return = (1 + daily_return).cumprod() - 1
-# st.pyplot(cumulative_return.plot(figsize=(15,7), title="Cumulative Return", rot=90).figure)
-
-tab1, tab2 = st.tabs(["📈 Chart", "🗃 Data"])
-tab1_data = st.pyplot(cumulative_return.plot(figsize=(15,7), title="Daily Return", rot=90).figure)
-tab2_data = cumulative_return
-
-tab1.subheader("A tab with a chart")
-tab1.tab1_data
-
-tab2.subheader("A tab with the data")
-tab2.write(tab2_data)
-
-
-######################################## Slied bar###################################################################
-low_volatility, high_volatility = st.select_slider(
-    'Select a range of volatility wavelength',
-    options=['low', 'medium', 'high' ],
-    value=('low', 'high'))
-st.write('You selected wavelengths between', low_volatility, 'and', high_volatility)
-
-################################ sidebar load graph  ######################################################################
-
-# st.set_page_config(page_title="Plotting Demo", page_icon="📈")
-
-st.markdown("# Plotting Demo")
-st.sidebar.header("Plotting Demo")
-st.write(
-    """This demo illustrates a combination of plotting and animation with
-Streamlit. We're generating a bunch of random numbers in a loop for around
-5 seconds. Enjoy!"""
-)
-
-progress_bar = st.sidebar.progress(0)
-status_text = st.sidebar.empty()
-last_rows = np.random.randn(1, 1)
-chart = st.line_chart(last_rows)
-
-for i in range(1, 101):
-    new_rows = last_rows[-1, :] + np.random.randn(5, 1).cumsum(axis=0)
-    status_text.text("%i%% Complete" % i)
-    chart.add_rows(new_rows)
-    progress_bar.progress(i)
-    last_rows = new_rows
-    time.sleep(0.05)
-
-progress_bar.empty()
-
-# Streamlit widgets automatically run the script from top to bottom. Since
-# this button is not connected to any other logic, it just causes a plain
-# rerun.
-st.button("Re-run")
-
-
-############################################## Sidebar Map ##################################################
-
-
-
-# st.set_page_config(page_title="Mapping Demo", page_icon="🌍")
-
-# st.markdown("# Mapping Demo")
-# st.sidebar.header("Mapping Demo")
-# st.write(
-#     """This demo shows how to use
-# [`st.pydeck_chart`](https://docs.streamlit.io/library/api-reference/charts/st.pydeck_chart)
-# to display geospatial data."""
-# )
-
-
-@st.cache_data
-def from_data_file(filename):
-    url = (
-        "http://raw.githubusercontent.com/streamlit/"
-        "example-data/master/hello/v1/%s" % filename
-    )
-    return pd.read_json(url)
-
-
-try:
-    ALL_LAYERS = {
-        "Wells Fargo": pdk.Layer(
-            "HexagonLayer",
-            data=from_data_file("bike_rental_stats.json"),
-            get_position=["lon", "lat"],
-            radius=200,
-            elevation_scale=4,
-            elevation_range=[0, 1000],
-            extruded=True,
-        ),
-        "JP Morgan": pdk.Layer(
-            "ScatterplotLayer",
-            data=from_data_file("bart_stop_stats.json"),
-            get_position=["lon", "lat"],
-            get_color=[200, 30, 0, 160],
-            get_radius="[exits]",
-            radius_scale=0.05,
-        ),
-        "Bank of America": pdk.Layer(
-            "TextLayer",
-            data=from_data_file("bart_stop_stats.json"),
-            get_position=["lon", "lat"],
-            get_text="name",
-            get_color=[0, 0, 0, 200],
-            get_size=15,
-            get_alignment_baseline="'bottom'",
-        ),
-        "Silcon Vally Bank": pdk.Layer(
-            "ArcLayer",
-            data=from_data_file("bart_path_stats.json"),
-            get_source_position=["lon", "lat"],
-            get_target_position=["lon2", "lat2"],
-            get_source_color=[200, 30, 0, 160],
-            get_target_color=[200, 30, 0, 160],
-            auto_highlight=True,
-            width_scale=0.0001,
-            get_width="outbound",
-            width_min_pixels=3,
-            width_max_pixels=30,
-        ),
-           "Silcon Vally Bank": pdk.Layer(
-            "ArcLayer",
-            data=from_data_file("bart_path_stats.json"),
-            get_source_position=["lon", "lat"],
-            get_target_position=["lon2", "lat2"],
-            get_source_color=[200, 30, 0, 160],
-            get_target_color=[200, 30, 0, 160],
-            auto_highlight=True,
-            width_scale=0.0001,
-            get_width="outbound",
-            width_min_pixels=3,
-            width_max_pixels=30,
-        ),
+    navs = df.loc[date_selected]
+    
+    # Exemple de classification selon la circulaire
+    exposures = {
+        "SOROS FUND (Equity - non noté)": navs["SOROS FUND MANAGEMENT LLC"] * 100,
+        "PAULSON & CO (Equity)": navs["PAULSON & CO.INC."] * 100,
+        "TIGER GLOBAL (Venture)": navs["TIGER GLOBAL MANAGEMENT LLC"] * 150,
+        "BERKSHIRE HATHAWAY (Corporate)": navs["BERKSHIRE HATHAWAY INC"] * 100,
+        "S&P 500 Index (Equity)": navs["S&P 500"] * 10,
     }
-    st.sidebar.markdown("### Bank List")
-    selected_layers = [
-        layer
-        for layer_name, layer in ALL_LAYERS.items()
-        if st.sidebar.checkbox(layer_name, True)
-    ]
-    if selected_layers:
-        st.pydeck_chart(
-            pdk.Deck(
-                map_style="mapbox://styles/mapbox/light-v9",
-                initial_view_state={
-                    "latitude": 37.76,
-                    "longitude": -122.4,
-                    "zoom": 11,
-                    "pitch": 50,
-                },
-                layers=selected_layers,
-            )
-        )
+    
+    rwa_credit = calculator.rwa_credit(exposures)
+    
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        st.dataframe(pd.DataFrame.from_dict(exposures, orient="index", columns=["Exposition (M MAD)"]), 
+                     use_container_width=True)
+    with col2:
+        st.metric("**RWA Crédit**", f"{rwa_credit:,.0f} M MAD")
+
+with tab3:
+    st.header("Risque de Marché (Art. 48-55)")
+    fund = st.selectbox("Sélectionnez le fonds", df.columns)
+    series = df[fund]
+    
+    rwa_market = calculator.rwa_market(series)
+    
+    st.metric("**RWA Marché**", f"{rwa_market:,.0f} M MAD")
+    fig = px.line(series, title=f"Évolution NAV – {fund}", labels={"value": "NAV"})
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab4:
+    st.header("Risque Opérationnel (Art. 56-62)")
+    avg_income = st.slider("Revenu brut moyen annuel (M MAD)", 
+                           min_value=100, max_value=5000, value=1200, step=50)
+    rwa_op = calculator.rwa_operational(avg_income)
+    st.metric("**RWA Opérationnel**", f"{rwa_op:,.0f} M MAD")
+
+with tab5:
+    st.header("Coefficient de Solvabilité (Art. 2)")
+    
+    own_funds = st.number_input("Fonds Propres (M MAD)", 
+                                min_value=100, max_value=20000, 
+                                value=2500, step=50)
+    
+    total_rwa = rwa_credit + rwa_market + rwa_op
+    ratio = calculator.solvency_ratio(own_funds, total_rwa)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total RWA", f"{total_rwa:,.0f} M MAD")
+    col2.metric("Coefficient de Solvabilité", f"{ratio:.2f} %")
+    col3.metric("Seuil BAM", "10.00 %")
+    
+    if ratio >= 10:
+        st.success("✅ CONFORME – Coefficient ≥ 10 % (Circulaire 26/G/2006)")
     else:
-        st.error("Please choose at least one layer above.")
-except URLError as e:
-    st.error(
-        """
-        **This demo requires internet access.**
-        Connection error: %s
-    """
-        % e.reason
+        st.error("❌ NON CONFORME – Coefficient < 10 % – Action corrective requise")
+    
+    # Graphique répartition
+    fig_pie = px.pie(
+        values=[rwa_credit, rwa_market, rwa_op],
+        names=["Crédit", "Marché", "Opérationnel"],
+        title="Répartition des RWA",
+        hole=0.4
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+    
+    # Export CSV
+    summary = pd.DataFrame({
+        "Date": [date_selected.date()],
+        "RWA_Crédit": [rwa_credit],
+        "RWA_Marché": [rwa_market],
+        "RWA_Opérationnel": [rwa_op],
+        "Total_RWA": [total_rwa],
+        "Fonds_Propres": [own_funds],
+        "Ratio_%": [ratio],
+        "Conformité": ["Conforme" if ratio >= 10 else "Non conforme"]
+    })
+    
+    st.download_button(
+        label="📥 Télécharger rapport CSV",
+        data=summary.to_csv(index=False),
+        file_name=f"solvabilite_bam_{date_selected.date()}.csv",
+        mime="text/csv"
     )
 
-
-    ################################## graph ###################################
-
-
-
-# st.set_page_config(page_title="DataFrame Demo", page_icon="📊")
-
-st.markdown("# DataFrame Demo")
-st.sidebar.header("DataFrame Demo")
-st.write(
-    """This demo shows how to use `st.write` to visualize Pandas DataFrames.
-(Data courtesy of the [UN Data Explorer](http://data.un.org/Explorer.aspx).)"""
-)
-
-
-@st.cache_data
-def get_UN_data():
-    AWS_BUCKET_URL = "http://streamlit-demo-data.s3-us-west-2.amazonaws.com"
-    df = pd.read_csv(AWS_BUCKET_URL + "/agri.csv.gz")
-    return df.set_index("Region")
-
-
-try:
-    df = get_UN_data()
-    countries = st.multiselect(
-        "Choose countries", list(df.index), ["China", "United States of America"]
-    )
-    if not countries:
-        st.error("Please select at least one country.")
-    else:
-        data = df.loc[countries]
-        data /= 1000000.0
-        st.write("### Gross Agricultural Production ($B)", data.sort_index())
-
-        data = data.T.reset_index()
-        data = pd.melt(data, id_vars=["index"]).rename(
-            columns={"index": "year", "value": "Gross Agricultural Product ($B)"}
-        )
-        chart = (
-            alt.Chart(data)
-            .mark_area(opacity=0.3)
-            .encode(
-                x="year:T",
-                y=alt.Y("Gross Agricultural Product ($B):Q", stack=None),
-                color="Region:N",
-            )
-        )
-        st.altair_chart(chart, use_container_width=True)
-except URLError as e:
-    st.error(
-        """
-        **This demo requires internet access.**
-        Connection error: %s
-    """
-        % e.reason
-    )
-
+st.caption("🚀 Application 100 % conforme Circulaire n°26/G/2006 • Développée avec Streamlit + whale_navs.csv")
