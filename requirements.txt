@@ -1,4 +1,7 @@
-streamlit
 pandas
-plotly
-
+streamlit
+Path
+pydeck
+numpy
+datetime
+time
