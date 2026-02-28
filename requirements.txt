@@ -4,3 +4,4 @@ numpy
 pydeck
 altair
 matplotlib
+plotly
